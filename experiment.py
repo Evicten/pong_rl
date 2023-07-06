@@ -51,3 +51,7 @@ def conv2D_forward(I, kernel_size, num_filters):  #2D conv using numpy
   filters = initialize_filters(kernel_size, num_filters)
   output = convolve2d(I, filters)
   return output
+
+
+#lets try backprop
+

@@ -144,6 +144,102 @@ def policy_forward(x):
   p = sigmoid(logp)
   return p, h # return probability of taking action 2, and hidden state
 
+def conv2D_backward(dL_dout, input_tensor, filters, output_shape):
+    # Get dimensions
+    batch_size, input_height, input_width, num_channels = input_tensor.shape
+    filter_height, filter_width, num_input_channels, num_output_channels = filters.shape
+
+    # Initialize gradients
+    dL_dinput = np.zeros_like(input_tensor)
+    dL_dfilters = np.zeros_like(filters)
+
+    # Perform the backward pass
+    for b in range(batch_size):
+        for i in range(input_height):
+            for j in range(input_width):
+                for k in range(num_output_channels):
+                    # Update gradient w.r.t. input tensor
+                    dL_dinput[b, i:i+filter_height, j:j+filter_width, :] += dL_dout[b, i, j, k] * filters[:, :, :, k]
+
+                    # Update gradient w.r.t. filters
+                    dL_dfilters[:, :, :, k] += dL_dout[b, i, j, k] * input_tensor[b, i:i+filter_height, j:j+filter_width, :]
+
+    # Remove padding from the gradients
+    padding_height = filter_height // 2
+    padding_width = filter_width // 2
+    dL_dinput = dL_dinput[:, padding_height:-padding_height, padding_width:-padding_width, :]
+
+    return dL_dinput, dL_dfilters
+
+
+def backward_relu(dL_dout, input_tensor):
+    # Compute element-wise derivative of ReLU
+    dL_din = dL_dout * (input_tensor > 0)
+
+    return dL_din
+
+
+def backward_max_pooling_2d(dL_dout, input_tensor, pool_size=(2, 2)):
+    # Get dimensions
+    batch_size, input_height, input_width, num_channels = input_tensor.shape
+    _, output_height, output_width, _ = dL_dout.shape
+
+    # Initialize gradient
+    dL_din = np.zeros_like(input_tensor)
+
+    # Perform the backward pass
+    for b in range(batch_size):
+        for h in range(output_height):
+            for w in range(output_width):
+                for c in range(num_channels):
+                    h_start = h * pool_size[0]
+                    h_end = h_start + pool_size[0]
+                    w_start = w * pool_size[1]
+                    w_end = w_start + pool_size[1]
+
+                    # Find the index of the maximum value in the corresponding input patch
+                    max_index = np.argmax(input_tensor[b, h_start:h_end, w_start:w_end, c])
+
+                    # Compute the gradient only at the maximum value
+                    dL_din[b, h_start:h_end, w_start:w_end, c].flat[max_index] = dL_dout[b, h, w, c]
+
+    return dL_din
+
+
+def conv2D_backward_pass(dL_dout, input_tensor, filters, output_shape):
+    # Backpropagate through the layers
+    dL_din_relu = backward_max_pooling_2d(dL_dout, input_tensor, pool_size=(2, 2))
+    dL_din = backward_relu(dL_din_relu, input_tensor)
+    dL_din, dL_dfilters = conv2D_backward(dL_din, input_tensor, filters, output_shape)
+
+    return dL_din, dL_dfilters
+
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
+def policy_backward(dL_dp, dL_dh, input_tensor, model, h):
+    # Compute gradients
+    dL_dlogp = np.copy(dL_dp)
+    dL_dlogp[range(len(input_tensor)), 0] -= 1  # Subtract 1 from the correct action probability gradient
+
+    dL_dW2 = np.dot(dL_dlogp.T, h.T)
+    dL_dh += np.dot(dL_dlogp, model['W2'])
+    dL_dh[h <= 0] = 0  # ReLU nonlinearity gradient
+
+    dL_dW1 = np.dot(dL_dh.T, input_tensor.reshape(input_tensor.shape[0], -1))
+
+    return dL_dW1, dL_dW2
+
+
+def policy_backward_pass(dL_dp, dL_dh, input_tensor, model, h):
+    # Backpropagate through the layers
+    dL_dW1, dL_dW2 = policy_backward(dL_dp, dL_dh, input_tensor, model, h)
+
+    return dL_dW1, dL_dW2
+
+
 def policy_backward(eph, epdlogp):
   """ backward pass. (eph is array of intermediate hidden states) """
   dW2 = np.dot(eph.T, epdlogp).ravel()
