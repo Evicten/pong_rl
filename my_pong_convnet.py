@@ -128,21 +128,21 @@ def discount_rewards(r):
   return discounted_r
 
 def policy_forward(x):
-  x = conv2D_forward(x, kernel_size=(3,3), num_filters=32)
-  x = forward_relu(x)
-  x = forward_max_pooling_2d(x, pool_size=(2,2))
+  conv1 = conv2D_forward(x, kernel_size=(3,3), num_filters=32)
+  relu1 = forward_relu(conv1)
+  pool1 = forward_max_pooling_2d(relu1, pool_size=(2,2))
 
-  x = conv2D_forward(x, kernel_size=(3,3), num_filters=64)
-  x = forward_relu(x)
-  x = forward_max_pooling_2d(x, pool_size=(2,2))
+  conv2 = conv2D_forward(pool1, kernel_size=(3,3), num_filters=64)
+  relu2 = forward_relu(conv2)
+  pool2 = forward_max_pooling_2d(relu2, pool_size=(2,2))
 
-  x = x.reshape4(x.shape[0], -1) #flatten
+  x_reshape = pool2.reshape(pool2.shape[0], -1) #flatten
   
-  h = np.dot(model['W1'], x)
+  h = np.dot(model['W1'], x_reshape)
   h[h<0] = 0 # ReLU nonlinearity
   logp = np.dot(model['W2'], h)
   p = sigmoid(logp)
-  return p, h # return probability of taking action 2, and hidden state
+  return p, h, pool2, pool1 # return probability of taking action 2, and hidden state
 
 def conv2D_backward(dL_dout, input_tensor, filters, output_shape):
     # Get dimensions
@@ -214,46 +214,23 @@ def conv2D_backward_pass(dL_dout, input_tensor, filters, output_shape):
 
     return dL_din, dL_dfilters
 
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-
-def policy_backward(dL_dp, dL_dh, input_tensor, model, h):
-    # Compute gradients
-    dL_dlogp = np.copy(dL_dp)
-    dL_dlogp[range(len(input_tensor)), 0] -= 1  # Subtract 1 from the correct action probability gradient
-
-    dL_dW2 = np.dot(dL_dlogp.T, h.T)
-    dL_dh += np.dot(dL_dlogp, model['W2'])
-    dL_dh[h <= 0] = 0  # ReLU nonlinearity gradient
-
-    dL_dW1 = np.dot(dL_dh.T, input_tensor.reshape(input_tensor.shape[0], -1))
-
-    return dL_dW1, dL_dW2
-
-
-def policy_backward_pass(dL_dp, dL_dh, input_tensor, model, h):
-    # Backpropagate through the layers
-    dL_dW1, dL_dW2 = policy_backward(dL_dp, dL_dh, input_tensor, model, h)
-
-    return dL_dW1, dL_dW2
-
-
-def policy_backward(eph, epdlogp):
-  """ backward pass. (eph is array of intermediate hidden states) """
+def policy_backward(eph, epdlogp, eppool2, eppool1):
+  """ backward pass of dense layers. (eph is array of intermediate hidden states) """
   dW2 = np.dot(eph.T, epdlogp).ravel()
   dh = np.outer(epdlogp, model['W2'])
-  dh[eph <= 0] = 0 # backpro prelu
+  dh[eph <= 0] = 0 # backprop relu
   dW1 = np.dot(dh.T, epx)
-  return {'W1':dW1, 'W2':dW2}
+  dflatten = np.dot(model['W1'].T, epdlogp)
+  dP2 = dflatten.reshape(eppool2[0].shape)
+  
+  return {'W1':dW1, 'W2':dW2, 'K2': dK2, 'K1': dK1}, 
 
 render_mode = 'human' if render else None
 
 env = gymnasium.make("ALE/Pong-v5", render_mode = render_mode)
 observation, info = env.reset()
 prev_x = None # used in computing the difference frame
-xs,hs,dlogps,drs = [],[],[],[]
+xs,hs,dlogps,drs, pool2s, pool1s = [],[],[],[]
 running_reward = None
 reward_sum = 0
 episode_number = 0
@@ -266,7 +243,7 @@ while True:
   prev_x = cur_x
 
   # forward the policy network and sample an action from the returned probability
-  aprob, h = policy_forward(x)
+  aprob, h, pool2, pool1 = policy_forward(x)
   action = 2 if np.random.uniform() < aprob else 3 # roll the dice!
 
   # record various intermediates (needed later for backprop)
@@ -289,7 +266,9 @@ while True:
     eph = np.vstack(hs)
     epdlogp = np.vstack(dlogps)
     epr = np.vstack(drs)
-    xs,hs,dlogps,drs = [],[],[],[] # reset array memory
+    eppool1 = np.vstack(pool1s)
+    eppool2 = np.vstack(pool2s)
+    xs,hs,dlogps,drs,pool1s,pool2s = [],[],[],[],[],[]# reset array memory
 
     # compute the discounted reward backwards through time
     discounted_epr = discount_rewards(epr)
@@ -298,7 +277,7 @@ while True:
     discounted_epr /= np.std(discounted_epr)
 
     epdlogp *= discounted_epr # modulate the gradient with advantage (PG magic happens right here.)
-    grad = policy_backward(eph, epdlogp)
+    grad = policy_backward(eph, epdlogp, eppool2, eppool1)
     for k in model: grad_buffer[k] += grad[k] # accumulate grad over batch
 
     # perform rmsprop parameter update every batch_size episodes
