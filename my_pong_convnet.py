@@ -214,7 +214,7 @@ def conv2D_backward_pass(dL_dout, input_tensor, filters, output_shape):
 
     return dL_din, dL_dfilters
 
-def policy_backward(eph, epdlogp, eppool2, eppool1):
+def policy_backward(eph, epdlogp, eppool2, eppool1, epc2, epc1):
   """ backward pass of dense layers. (eph is array of intermediate hidden states) """
   dW2 = np.dot(eph.T, epdlogp).ravel()
   dh = np.outer(epdlogp, model['W2'])
@@ -222,15 +222,16 @@ def policy_backward(eph, epdlogp, eppool2, eppool1):
   dW1 = np.dot(dh.T, epx)
   dflatten = np.dot(model['W1'].T, epdlogp)
   dP2 = dflatten.reshape(eppool2[0].shape)
+  dC2 = backward_max_pooling_2d(dP2, epc2)
+  
   
   return {'W1':dW1, 'W2':dW2, 'K2': dK2, 'K1': dK1}, 
 
 render_mode = 'human' if render else None
-
 env = gymnasium.make("ALE/Pong-v5", render_mode = render_mode)
 observation, info = env.reset()
 prev_x = None # used in computing the difference frame
-xs,hs,dlogps,drs, pool2s, pool1s = [],[],[],[]
+xs,hs,dlogps,drs, pool2s, pool1s, c1s, c2s = [],[],[],[], [],[],[],[]
 running_reward = None
 reward_sum = 0
 episode_number = 0
@@ -268,7 +269,9 @@ while True:
     epr = np.vstack(drs)
     eppool1 = np.vstack(pool1s)
     eppool2 = np.vstack(pool2s)
-    xs,hs,dlogps,drs,pool1s,pool2s = [],[],[],[],[],[]# reset array memory
+    epc1 = np.vstack(c1s)
+    epc2 = np.vstack(c2s)
+    xs,hs,dlogps,drs,pool1s,pool2s, c1s, c2s = [],[],[],[],[],[],[],[]# reset array memory
 
     # compute the discounted reward backwards through time
     discounted_epr = discount_rewards(epr)
